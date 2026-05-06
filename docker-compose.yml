@@ -1,0 +1,17 @@
+name: birdwatch
+
+services:
+  analyzer:
+    build: ./analyzer
+    volumes:
+      - ./data:/data
+    env_file: .env
+    restart: always
+
+  webui:
+    build: ./webui
+    volumes:
+      - ./data:/data
+    ports:
+      - "5050:5050"
+    restart: always

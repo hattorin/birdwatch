@@ -1,0 +1,13 @@
+# データファイル（ローカルにのみ存在すべきもの）
+data/
+*.db
+*.wav
+*.jpg
+*.mp4
+
+# 認証情報
+.env
+
+# Docker
+__pycache__/
+*.pyc
