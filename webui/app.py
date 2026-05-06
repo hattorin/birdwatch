@@ -8,6 +8,10 @@ PHOTOS_DIR = "/data/photos"
 
 # 英語名 → 日本語名辞書
 BIRD_NAMES_JA = {
+    "Brambling": "アトリ",
+    "Rock Pigeon": "ドバト",
+    "Great Bittern": "サンカノゴイ",
+    "Black-crowned Night-Heron": "ゴイサギ",
     "Rose-ringed Parakeet": "ワカケホンセイインコ",
     "Northern Goshawk": "オオタカ",
     "Eurasian Tree Sparrow": "スズメ",
@@ -113,7 +117,7 @@ HTML = """
              onclick="openModal('/photo/{{ row[7] }}')" alt="bird">
         {% else %}—{% endif %}
       </td>
-      <td class="detected-at" data-utc="{{ row[1] }}">{{ row[1] }}</td>
+      <td class="detected-at" data-utc="{{ row[1] }}+00:00"></td>
       <td><span class="cam">{{ row[2] }}</span></td>
       <td>
         <span class="bird-ja">{{ bird_ja(row[3]) }}</span>
@@ -138,18 +142,20 @@ HTML = """
   </div>
 
   <script>
-    // ブラウザのタイムゾーンに合わせて日時を変換
-    document.querySelectorAll('.detected-at').forEach(el => {
-      const utc = el.dataset.utc;
-      if (!utc) return;
-      try {
-        const d = new Date(utc.includes('Z') ? utc : utc + 'Z');
-        el.textContent = d.toLocaleString('ja-JP', {
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
-      } catch(e) {}
+
+  document.querySelectorAll('.detected-at').forEach(el => {
+  const val = el.dataset.utc;
+  if (!val) return;
+  try {
+    const d = new Date(val);  // +00:00があるのでUTCと正しく解釈される
+    el.textContent = d.toLocaleString(navigator.language, {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
+  } catch(e) {
+    el.textContent = val;
+  }
+});
 
     function openModal(src) {
       document.getElementById('modal-img').src = src;
