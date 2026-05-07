@@ -8,6 +8,9 @@ PHOTOS_DIR = "/data/photos"
 
 # 英語名 → 日本語名辞書
 BIRD_NAMES_JA = {
+    "Eurasian Moorhen":"バン",
+    "Oriental Turtle-Dove":"キジバト",
+    "Ring-necked Pheasant": "コウライキジ",
     "Brambling": "アトリ",
     "Rock Pigeon": "ドバト",
     "Great Bittern": "サンカノゴイ",
