@@ -1,4 +1,10 @@
-import os, time, sqlite3, subprocess, tempfile, cv2, threading
+import os
+import time
+import sqlite3
+import subprocess
+import cv2
+import threading
+import glob
 from pathlib import Path
 from birdnetlib import Recording
 from birdnetlib.analyzer import Analyzer
@@ -10,15 +16,14 @@ CAMERA_NAMES = os.environ.get("CAMERA_NAMES", "").split(",")
 CONFIDENCE   = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.7"))
 LAT          = float(os.environ.get("LAT", "35.6"))
 LON          = float(os.environ.get("LON", "139.7"))
-SEGMENT_SECS = int(os.environ.get("SEGMENT_SECONDS", "30"))
 DB_PATH      = "/data/birds.db"
 CLIPS_DIR    = "/data/clips"
 PHOTOS_DIR   = "/data/photos"
+BUFFER_DIR   = "/data/audio-buffer"
 
 os.makedirs(CLIPS_DIR, exist_ok=True)
 os.makedirs(PHOTOS_DIR, exist_ok=True)
 
-# DB初期化
 con = sqlite3.connect(DB_PATH)
 con.execute("""
     CREATE TABLE IF NOT EXISTS detections (
@@ -42,15 +47,22 @@ con.close()
 bird_analyzer = Analyzer()
 yolo = YOLO("yolov8n.pt")
 yolo.overrides["verbose"] = False
-
-# BirdNETはスレッドセーフでないのでロックで直列化
 analyze_lock = threading.Lock()
 
 print("BirdNET Analyzer ready")
 print("YOLO bird detector ready")
 
 
-def extract_best_bird_frame(rtsp_url: str):
+def get_rtsp_url(camera_name: str) -> str:
+    for url, name in zip(CAMERA_URLS, CAMERA_NAMES):
+        if name.strip() == camera_name:
+            return url.strip()
+    return ""
+
+
+def extract_best_bird_frame(rtsp_url: str) -> tuple:
+    if not rtsp_url or "birdmic" in rtsp_url:
+        return None, None
     cap = cv2.VideoCapture(rtsp_url)
     if not cap.isOpened():
         return None, None
@@ -73,34 +85,28 @@ def extract_best_bird_frame(rtsp_url: str):
     return None, None
 
 
-def analyze_segment(rtsp_url: str, camera_name: str):
-    print(f"[{camera_name}] Capturing {SEGMENT_SECS}s...")
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_wav = tmp.name
-
+def wav_to_mp3(wav_path: str, mp3_path: str) -> bool:
     try:
-        # 音声30秒取得（明示的にsegment秒数を指定）
-        result = subprocess.run([
+        subprocess.run([
             "ffmpeg", "-y",
-            "-rtsp_transport", "tcp",
-            "-i", rtsp_url,
-            "-t", str(SEGMENT_SECS),
-            "-vn",
-            "-acodec", "pcm_s16le",
+            "-i", wav_path,
+            "-c:a", "libmp3lame",
+            "-b:a", "64k",
             "-ar", "48000",
             "-ac", "1",
-            tmp_wav
-        ], capture_output=True, timeout=SEGMENT_SECS + 20)
+            mp3_path
+        ], capture_output=True, check=True)
+        return True
+    except Exception as e:
+        print(f"  MP3変換エラー: {e}")
+        return False
 
-        if result.returncode != 0:
-            print(f"  [{camera_name}] FFmpegエラー: {result.stderr[-200:]}")
-            return
 
-        # BirdNET解析（ロックで直列化）
+def analyze_segment(wav_path: str, camera_name: str):
+    try:
         with analyze_lock:
             recording = Recording(
-                bird_analyzer, tmp_wav,
+                bird_analyzer, wav_path,
                 lat=LAT, lon=LON,
                 min_conf=CONFIDENCE,
             )
@@ -111,7 +117,7 @@ def analyze_segment(rtsp_url: str, camera_name: str):
             print(f"  [{camera_name}] 鳥なし")
             return
 
-        # 鳥検出時のみ写真撮影
+        rtsp_url   = get_rtsp_url(camera_name)
         photo_file = None
         best_frame, best_conf = extract_best_bird_frame(rtsp_url)
         if best_frame is not None:
@@ -122,22 +128,31 @@ def analyze_segment(rtsp_url: str, camera_name: str):
 
         con = sqlite3.connect(DB_PATH)
         for d in detections:
-            detected_at = datetime.now().isoformat(timespec="seconds")
+            detected_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             start_sec   = d.get("start_time", 0)
-            clip_start  = max(0, start_sec - 3)
-            clip_name   = f"{camera_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_t{int(start_sec)}.wav"
+            clip_start  = max(0, start_sec - 5)
+            clip_name   = f"{camera_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_t{int(start_sec)}.mp3"
             clip_path   = os.path.join(CLIPS_DIR, clip_name)
+
+            clip_saved = False
             try:
+                tmp_wav = clip_path.replace(".mp3", "_tmp.wav")
                 subprocess.run([
                     "ffmpeg", "-y",
                     "-ss", str(clip_start),
-                    "-i", tmp_wav,
-                    "-t", "6",
-                    "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "1",
-                    clip_path
+                    "-i", wav_path,
+                    "-t", "10",
+                    "-acodec", "pcm_s16le",
+                    "-ar", "48000",
+                    "-ac", "1",
+                    tmp_wav
                 ], capture_output=True, check=True)
-            except:
-                clip_name = None
+                if wav_to_mp3(tmp_wav, clip_path):
+                    clip_saved = True
+                if os.path.exists(tmp_wav):
+                    os.remove(tmp_wav)
+            except Exception as e:
+                print(f"  クリップ保存エラー: {e}")
 
             print(f"  🐦 {d['common_name']} ({d['confidence']:.0%}) @ {start_sec}秒")
             con.execute("""
@@ -145,39 +160,54 @@ def analyze_segment(rtsp_url: str, camera_name: str):
                 (detected_at, camera, common_name, scientific_name,
                  confidence, clip_file, photo_file)
                 VALUES (?,?,?,?,?,?,?)
-            """, (detected_at, camera_name, d['common_name'], d['scientific_name'],
-                  d['confidence'], clip_name, photo_file))
+            """, (detected_at, camera_name,
+                  d['common_name'], d['scientific_name'],
+                  d['confidence'],
+                  clip_name if clip_saved else None,
+                  photo_file))
         con.commit()
         con.close()
 
-    except subprocess.TimeoutExpired:
-        print(f"  [{camera_name}] タイムアウト")
     except Exception as e:
-        print(f"  [{camera_name}] エラー: {e}")
-    finally:
-        if os.path.exists(tmp_wav):
-            os.unlink(tmp_wav)
+        print(f"  [{camera_name}] 解析エラー: {e}")
 
 
-def camera_loop(rtsp_url: str, camera_name: str):
-    print(f"Starting loop: {camera_name}")
+def analyze_loop(camera_name: str):
+    cam_dir   = os.path.join(BUFFER_DIR, camera_name)
+    processed = set()
+
+    print(f"[{camera_name}] 解析ループ開始")
+
+    while not os.path.isdir(cam_dir):
+        print(f"[{camera_name}] audio-buffer待機中...")
+        time.sleep(5)
+
     while True:
         try:
-            analyze_segment(rtsp_url, camera_name)
+            files   = sorted(glob.glob(os.path.join(cam_dir, "*.wav")))
+            targets = [f for f in files[:-1] if f not in processed]
+
+            for wav_path in targets:
+                print(f"[{camera_name}] 解析: {os.path.basename(wav_path)}")
+                analyze_segment(wav_path, camera_name)
+                processed.add(wav_path)
+
+            existing  = set(glob.glob(os.path.join(cam_dir, "*.wav")))
+            processed &= existing
+
         except Exception as e:
             print(f"[{camera_name}] ループエラー: {e}")
-            time.sleep(10)
+
+        time.sleep(5)
 
 
-threads = []
-for url, name in zip(CAMERA_URLS, CAMERA_NAMES):
-    url  = url.strip()
+for name in CAMERA_NAMES:
     name = name.strip()
-    if url:
-        t = threading.Thread(target=camera_loop, args=(url, name), daemon=True)
-        t.start()
-        threads.append(t)
-        print(f"Started: {name}")
+    if not name:
+        continue
+    t = threading.Thread(target=analyze_loop, args=(name,), daemon=True)
+    t.start()
+    print(f"Started analyzer: {name}")
 
 try:
     while True:

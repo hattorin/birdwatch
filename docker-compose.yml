@@ -4,14 +4,17 @@ services:
   analyzer:
     build: ./analyzer
     volumes:
-      - ./data:/data
-    env_file: .env
+      # 解析結果はHDDに保存
+      - /volume2/docker2/birdwatch/data:/data
+      # audio-bufferはSSDから読み取り専用でマウント
+      - /volume1/docker/audio-recorder/data/audio-buffer:/data/audio-buffer:ro
+    env_file: /volume2/docker2/birdwatch/.env
     restart: always
 
   webui:
     build: ./webui
     volumes:
-      - ./data:/data
+      - /volume2/docker2/birdwatch/data:/data
     ports:
       - "5050:5050"
     restart: always
