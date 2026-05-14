@@ -1,30 +1,37 @@
-import sqlite3, os, requests, time, threading
+import sqlite3, os, json, requests, time, threading
 from flask import Flask, render_template_string, send_file, request
 from datetime import datetime, timedelta
 
+app = Flask(__name__)
+DB_PATH       = "/data/birds.db"
+CLIPS_DIR     = "/data/clips"
+PHOTOS_DIR    = "/data/photos"
+BIRDS_JA_PATH = "/app/birds_ja.json"
+CACHE_PATH    = "/data/image_cache.json"
+_wiki_cache: dict = {}
+
+
+def load_birds_ja():
+    try:
+        with open(BIRDS_JA_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"birds_ja.json読み込みエラー: {e}")
+        return {}
+
+BIRD_NAMES_JA = load_birds_ja()
+
+
 def to_jst(dt_str):
-    """UTC文字列をJSTに変換"""
     try:
         dt_str = dt_str.replace('T', ' ')[:19]
         dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
-        dt_jst = dt + timedelta(hours=9)
-        return dt_jst.strftime('%Y-%m-%d %H:%M:%S')
+        return (dt + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
     except:
         return dt_str
 
-app = Flask(__name__)
-DB_PATH    = "/data/birds.db"
-CLIPS_DIR  = "/data/clips"
-PHOTOS_DIR = "/data/photos"
-
-# 画像URLキャッシュ（/dataボリュームに永続化）
-CACHE_PATH = "/data/image_cache.json"
-_wiki_cache: dict[str, str] = {}
-
 
 def _load_cache():
-    """起動時にJSONキャッシュをメモリに読み込む"""
-    import json
     if os.path.exists(CACHE_PATH):
         try:
             with open(CACHE_PATH, "r") as f:
@@ -35,16 +42,14 @@ def _load_cache():
 
 
 def _save_cache():
-    """キャッシュをJSONに書き出す"""
-    import json
     try:
         with open(CACHE_PATH, "w") as f:
             json.dump(_wiki_cache, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[cache] 保存エラー: {e}")
 
+
 def _fetch_inaturalist(common_name: str) -> str:
-    """iNaturalist APIから鳥の代表画像URLを取得"""
     try:
         resp = requests.get(
             "https://api.inaturalist.org/v1/taxa",
@@ -65,7 +70,6 @@ def _fetch_inaturalist(common_name: str) -> str:
 
 
 def _fetch_wikipedia(common_name: str) -> str:
-    """Wikipedia APIから画像取得（iNaturalistが失敗した場合のフォールバック）"""
     try:
         resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
@@ -88,7 +92,6 @@ def _fetch_wikipedia(common_name: str) -> str:
 
 
 def _fetch_one(common_name: str) -> str:
-    """iNaturalist → Wikipedia の順でフォールバックしながら画像URL取得"""
     url = _fetch_inaturalist(common_name)
     if not url:
         url = _fetch_wikipedia(common_name)
@@ -96,7 +99,6 @@ def _fetch_one(common_name: str) -> str:
 
 
 def _prefetch_all(names: list):
-    """バックグラウンドスレッドで全種を0.5秒間隔で取得"""
     print(f"[inat] プリフェッチ開始: {len(names)}種")
     for name in names:
         if name not in _wiki_cache:
@@ -110,68 +112,12 @@ def _prefetch_all(names: list):
 
 
 def get_wiki_image(common_name: str) -> str:
-    """キャッシュから返す。未取得ならその場で1件だけ取得"""
     if common_name in _wiki_cache:
         return _wiki_cache[common_name]
     url = _fetch_one(common_name)
     _wiki_cache[common_name] = url
     return url
 
-
-BIRD_NAMES_JA = {
-    "Warbling White-eye":"メジロ",
-    "Common Redshank":"アカアシシギ",
-    "Eurasian Coot":"オオバン",
-    "Japanese Tit": "シジュウカラ",
-    "White's Thrush": "トラツグミ",
-    "Ural Owl": "フクロウ",
-    "Long-eared Owl": "トラフズク",
-    "Rook": "ミヤマガラス",
-    "Eurasian Hoopoe": "ヤツガシラ",
-    "Eurasian Moorhen": "バン",
-    "Oriental Turtle-Dove": "キジバト",
-    "Ring-necked Pheasant": "コウライキジ",
-    "Brambling": "アトリ",
-    "Rock Pigeon": "ドバト",
-    "Great Bittern": "サンカノゴイ",
-    "Black-crowned Night-Heron": "ゴイサギ",
-    "Rose-ringed Parakeet": "ワカケホンセイインコ",
-    "Northern Goshawk": "オオタカ",
-    "Eurasian Tree Sparrow": "スズメ",
-    "Brown-eared Bulbul": "ヒヨドリ",
-    "Japanese Bush Warbler": "ウグイス",
-    "Japanese White-eye": "メジロ",
-    "Great Tit": "シジュウカラ",
-    "Carrion Crow": "ハシボソガラス",
-    "Large-billed Crow": "ハシブトガラス",
-    "Oriental Turtle Dove": "キジバト",
-    "Common Kingfisher": "カワセミ",
-    "Grey Starling": "ムクドリ",
-    "White Wagtail": "ハクセキレイ",
-    "Barn Swallow": "ツバメ",
-    "Japanese Pygmy Woodpecker": "コゲラ",
-    "Great Spotted Woodpecker": "アカゲラ",
-    "Black Kite": "トビ",
-    "Common Pheasant": "キジ",
-    "Grey Heron": "アオサギ",
-    "Gray Heron": "アオサギ",
-    "Common Cuckoo": "カッコウ",
-    "Lesser Cuckoo": "ホトトギス",
-    "Osprey": "ミサゴ",
-    "Peregrine Falcon": "ハヤブサ",
-    "Oriental Greenfinch": "カワラヒワ",
-    "Eurasian Jay": "カケス",
-    "Azure-winged Magpie": "オナガ",
-    "Varied Tit": "ヤマガラ",
-    "Long-tailed Tit": "エナガ",
-    "Narcissus Flycatcher": "キビタキ",
-    "Blue-and-white Flycatcher": "オオルリ",
-    "Daurian Redstart": "ジョウビタキ",
-    "Dusky Thrush": "ツグミ",
-    "Meadow Bunting": "ホオジロ",
-    "Eurasian Sparrowhawk": "ハイタカ",
-    "Green-winged Teal": "トモエガモ",
-}
 
 HTML = """
 <!DOCTYPE html>
@@ -199,13 +145,19 @@ HTML = """
     .conf-mid  { color: #999; }
     audio { height: 28px; max-width: 180px; }
     .bird-photo { width: 120px; height: 80px; object-fit: cover; border-radius: 4px; cursor: pointer; }
-    /* Wikipedia画像はやや薄いボーダーで区別 */
     .bird-photo-wiki { width: 120px; height: 80px; object-fit: cover; border-radius: 4px;
                        cursor: pointer; border: 2px solid #b2dfdb; opacity: 0.92; }
     .wiki-label { font-size: 0.65em; color: #888; display: block; margin-top: 2px; text-align: center; }
     .bird-ja { font-size: 1.05em; font-weight: bold; display: block; }
     .bird-en { font-size: 0.75em; color: #999; display: block; }
     .bird-sci { font-size: 0.72em; color: #bbb; font-style: italic; display: block; }
+    .bird-birdnet { font-size: 0.72em; color: #e65100; display: block; margin-top: 2px; }
+    .badge-new { background: #e53935; color: white; font-size: 0.7em;
+                 padding: 1px 6px; border-radius: 10px; margin-left: 4px;
+                 vertical-align: middle; font-weight: bold; }
+    .badge-gemini { background: #1565c0; color: white; font-size: 0.7em;
+                    padding: 1px 6px; border-radius: 10px; margin-left: 4px;
+                    vertical-align: middle; font-weight: bold; }
     .modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%;
              background:rgba(0,0,0,0.8); z-index:100; align-items:center; justify-content:center; }
     .modal.open { display:flex; }
@@ -296,9 +248,20 @@ HTML = """
       <td>{{ to_jst(row[1]) }}</td>
       <td><span class="cam">{{ row[2] }}</span></td>
       <td>
-        <span class="bird-ja">{{ bird_ja(row[3]) }}</span>
+        <span class="bird-ja">
+          {{ bird_ja(row[3]) }}
+          {% if row[0] in first_detections %}
+          <span class="badge-new">NEW!</span>
+          {% endif %}
+          {% if row[9] %}
+          <span class="badge-gemini" title="BirdNET: {{ row[9] }}">AI修正</span>
+          {% endif %}
+        </span>
         <span class="bird-en">{{ row[3] }}</span>
         <span class="bird-sci">{{ row[4] }}</span>
+        {% if row[9] %}
+        <span class="bird-birdnet">BirdNET: {{ row[9] }}</span>
+        {% endif %}
       </td>
       <td class="{{ 'conf-high' if row[5] >= 0.8 else 'conf-mid' }}">
         {% if row[5] > 0 %}{{ "%.0f"|format(row[5]*100) }}%{% else %}—{% endif %}
@@ -333,8 +296,9 @@ HTML = """
 </html>
 """
 
+
 @app.context_processor
-def inject_bird_ja():
+def inject_helpers():
     return dict(
         bird_ja=lambda name: BIRD_NAMES_JA.get(name, name),
         to_jst=to_jst
@@ -343,32 +307,41 @@ def inject_bird_ja():
 
 @app.route("/")
 def index():
-    sel_cam   = request.args.get("cam", "")
-    sel_q     = request.args.get("q", "")
-    page      = int(request.args.get("page", 1))
-    per_page  = int(request.args.get("per_page", 50))
-    dedup_min = int(request.args.get("dedup_min", 5))
+    sel_cam    = request.args.get("cam", "")
+    sel_q      = request.args.get("q", "")
+    page       = int(request.args.get("page", 1))
+    per_page   = int(request.args.get("per_page", 50))
+    dedup_min  = int(request.args.get("dedup_min", 5))
     dedup_secs = dedup_min * 60
 
     con = sqlite3.connect(DB_PATH)
 
+    first_detections = set(
+        r[0] for r in con.execute(
+            "SELECT MIN(id) FROM detections GROUP BY common_name"
+        ).fetchall()
+    )
+
     base_query = """
         SELECT d.*
         FROM detections d
-        WHERE NOT EXISTS (
-            SELECT 1 FROM detections d2
-            WHERE d2.common_name = d.common_name
-            AND ABS(
-                strftime('%s', replace(d.detected_at,  'T', ' ')) -
-                strftime('%s', replace(d2.detected_at, 'T', ' '))
-            ) < ?
-            AND (
-                (d2.camera = 'verander_mic' AND d.camera != 'verander_mic')
-                OR (
-                    (d2.camera = 'verander_mic') = (d.camera = 'verander_mic')
-                    AND d2.id < d.id
+        WHERE (
+            NOT EXISTS (
+                SELECT 1 FROM detections d2
+                WHERE d2.common_name = d.common_name
+                AND ABS(
+                    strftime('%s', replace(d.detected_at,  'T', ' ')) -
+                    strftime('%s', replace(d2.detected_at, 'T', ' '))
+                ) < ?
+                AND (
+                    (d2.camera = 'verander_mic' AND d.camera != 'verander_mic')
+                    OR (
+                        (d2.camera = 'verander_mic') = (d.camera = 'verander_mic')
+                        AND d2.id < d.id
+                    )
                 )
             )
+            OR d.id IN (SELECT MIN(id) FROM detections GROUP BY common_name)
         )
     """
 
@@ -399,8 +372,13 @@ def index():
 
     total_pages = max(1, (total_count + per_page - 1) // per_page)
 
-    # キャッシュから画像URLを引くだけ（取得はバックグラウンドで完了済み）
+    # photo_fileがない行のみiNaturalist画像を使用
     wiki_images = {row[3]: _wiki_cache.get(row[3], "") for row in rows if not row[7]}
+
+    # キャッシュにない鳥名はバックグラウンドで取得
+    missing = [row[3] for row in rows if not row[7] and row[3] not in _wiki_cache]
+    if missing:
+        threading.Thread(target=_prefetch_all, args=(missing,), daemon=True).start()
 
     return render_template_string(HTML, rows=rows, total=total, species=species,
                                   photos=photos, cameras=cameras,
@@ -409,7 +387,8 @@ def index():
                                   total_pages=total_pages,
                                   total_count=total_count,
                                   dedup_min=dedup_min,
-                                  wiki_images=wiki_images)
+                                  wiki_images=wiki_images,
+                                  first_detections=first_detections)
 
 
 @app.route("/audio/<filename>")
@@ -429,9 +408,10 @@ def photo(filename):
 
 
 if __name__ == "__main__":
-    # 起動時にキャッシュ読み込み → 未取得分だけプリフェッチ
     _load_cache()
-    all_names = list(BIRD_NAMES_JA.keys())
+    all_names = list(set(
+        r for r in BIRD_NAMES_JA.keys()
+    ))
     t = threading.Thread(target=_prefetch_all, args=(all_names,), daemon=True)
     t.start()
     app.run(host="0.0.0.0", port=5050, debug=False)
